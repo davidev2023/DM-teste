@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#d4af37">
+    <title>DM Financeira</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>DM Financeira</h1>
+        <p>Controle de Empréstimos</p>
+        <button id="btnInstalar">📲 Instalar Aplicativo</button>
+    </header>
+
+    <main>
+        <!-- DASHBOARD -->
+        <section id="dashboard" class="tela ativa">
+            <div class="dashboard">
+                <div class="box"><h3>👥 Clientes</h3><p id="totalClientes">0</p></div>
+                <div class="box"><h3>💰 Emprestado</h3><p id="totalEmprestado">R$ 0,00</p></div>
+                <div class="box"><h3>✅ Recebido</h3><p id="totalRecebido">R$ 0,00</p></div>
+                <div class="box"><h3>⏳ Em Aberto</h3><p id="totalAberto">R$ 0,00</p></div>
+            </div>
+        </section>
+
+        <!-- LISTA DE CLIENTES -->
+        <section id="clientes" class="tela">
+            <div class="card">
+                <h2>Clientes Cadastrados</h2>
+                <div id="listaClientes"></div>
+            </div>
+        </section>
+
+        <!-- NOVO CLIENTE -->
+        <section id="novoCliente" class="tela">
+            <div class="card">
+                <h2>Novo Empréstimo</h2>
+
+                <input id="nome" type="text" placeholder="Nome completo">
+                <input id="cpf" type="text" inputmode="numeric" placeholder="CPF">
+                <input id="telefone" type="tel" inputmode="tel" placeholder="Telefone (com DDD)">
+                <input id="endereco" type="text" placeholder="Endereço">
+
+                <label for="valor">Valor do Empréstimo:</label>
+                <select id="valor">
+                    <option value="300">R$ 300,00 (R$ 17,00/dia)</option>
+                    <option value="400">R$ 400,00 (R$ 22,00/dia)</option>
+                    <option value="500">R$ 500,00 (R$ 28,00/dia)</option>
+                    <option value="600">R$ 600,00 (R$ 33,00/dia)</option>
+                    <option value="700">R$ 700,00 (R$ 39,00/dia)</option>
+                    <option value="800">R$ 800,00 (R$ 44,00/dia)</option>
+                    <option value="900">R$ 900,00 (R$ 50,00/dia)</option>
+                    <option value="1000">R$ 1.000,00 (R$ 56,00/dia)</option>
+                </select>
+
+                <label for="data">Data do Empréstimo:</label>
+                <input id="data" type="date">
+
+                <button onclick="salvarCliente()">Cadastrar Empréstimo</button>
+            </div>
+        </section>
+
+        <!-- DETALHES DO CLIENTE -->
+        <section id="detalhesCliente" class="tela">
+            <div id="detalhes"></div>
+        </section>
+    </main>
+
+    <!-- NAVEGAÇÃO INFERIOR -->
+    <nav>
+        <button onclick="abrirTela('dashboard')">🏠</button>
+        <button onclick="abrirTela('clientes')">👥</button>
+        <button onclick="abrirTela('novoCliente')">➕</button>
+    </nav>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
