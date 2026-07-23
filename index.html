@@ -3,80 +3,183 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#d4af37">
     <title>DM Financeira</title>
     <link rel="stylesheet" href="style.css">
+    
+    <!-- CDN jsPDF para Geração de Comprovantes em PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    
+    <!-- CDN Chart.js para o Gráfico de Desempenho -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 
-    <header>
-        <h1>DM Financeira</h1>
-        <p>Controle de Empréstimos</p>
-        <button id="btnInstalar">📲 Instalar Aplicativo</button>
+    <!-- OVERLAY DE CARREGAMENTO (LOADING) -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Carregando dados...</p>
+    </div>
+
+    <!-- CABEÇALHO SUPERIOR (APENAS ATUALIZAÇÃO E INSTALAÇÃO PWA) -->
+    <header class="header-topo">
+        <div class="header-content">
+            <h1>DM Financeira</h1>
+            <div class="header-acoes">
+                <button id="btnAtualizarApp" onclick="verificarAtualizacao()" class="btn-topo">🔄 Verificar Atualização</button>
+                <button id="btnInstalarPwa" onclick="instalarPWA()" class="btn-topo btn-pwa" style="display: none;">📲 Instalar App</button>
+            </div>
+        </div>
     </header>
 
-    <main>
-        <!-- DASHBOARD -->
+    <!-- CONTEÚDO PRINCIPAL -->
+    <main class="conteudo-principal">
+
+        <!-- TELA: DASHBOARD -->
         <section id="dashboard" class="tela ativa">
-            <div class="dashboard">
-                <div class="box"><h3>👥 Clientes</h3><p id="totalClientes">0</p></div>
-                <div class="box"><h3>💰 Emprestado</h3><p id="totalEmprestado">R$ 0,00</p></div>
-                <div class="box"><h3>✅ Recebido</h3><p id="totalRecebido">R$ 0,00</p></div>
-                <div class="box"><h3>⏳ Em Aberto</h3><p id="totalAberto">R$ 0,00</p></div>
+            <h2>Resumo Geral</h2>
+            <div class="cards-dashboard">
+                <div class="card-dash">
+                    <h3>Total de Clientes</h3>
+                    <p id="totalClientes">0</p>
+                </div>
+                <div class="card-dash">
+                    <h3>Total Emprestado</h3>
+                    <p id="totalEmprestado">R$ 0,00</p>
+                </div>
+                <div class="card-dash">
+                    <h3>Total Recebido</h3>
+                    <p id="totalRecebido">R$ 0,00</p>
+                </div>
+                <div class="card-dash">
+                    <h3>Em Aberto</h3>
+                    <p id="totalAberto">R$ 0,00</p>
+                </div>
+            </div>
+
+            <div class="container-grafico">
+                <h3>Desempenho Financeiro</h3>
+                <canvas id="graficoDashboard"></canvas>
             </div>
         </section>
 
-        <!-- LISTA DE CLIENTES -->
+        <!-- TELA: CLIENTES ATIVOS -->
         <section id="clientes" class="tela">
-            <div class="card">
-                <h2>Clientes Cadastrados</h2>
-                <div id="listaClientes"></div>
+            <h2>Clientes Cadastrados</h2>
+            <div id="listaClientes" class="lista-container">
+                <!-- Injetado dinamicamente via JS -->
             </div>
         </section>
 
-        <!-- NOVO CLIENTE -->
-        <section id="novoCliente" class="tela">
-            <div class="card">
-                <h2>Novo Empréstimo</h2>
+        <!-- TELA: SOLICITAÇÕES PENDENTES -->
+        <section id="solicitacoes" class="tela">
+            <h2>Solicitações de Empréstimo</h2>
+            <div id="listaSolicitacoes" class="lista-container">
+                <!-- Injetado dinamicamente via JS -->
+            </div>
+        </section>
 
-                <input id="nome" type="text" placeholder="Nome completo">
-                <input id="cpf" type="text" inputmode="numeric" placeholder="CPF">
-                <input id="telefone" type="tel" inputmode="tel" placeholder="Telefone (com DDD)">
-                <input id="endereco" type="text" placeholder="Endereço">
+        <!-- TELA: CADASTRO DE CLIENTE -->
+        <section id="cadastro" class="tela">
+            <h2>Cadastrar Novo Empréstimo</h2>
+            <form onsubmit="event.preventDefault(); salvarCliente();" class="form-cadastro">
+                <label>Nome do Cliente *</label>
+                <input type="text" id="nome" required placeholder="Nome completo">
 
-                <label for="valor">Valor do Empréstimo:</label>
+                <label>CPF</label>
+                <input type="text" id="cpf" placeholder="000.000.000-00">
+
+                <label>Telefone *</label>
+                <input type="text" id="telefone" required placeholder="(62) 99999-9999">
+
+                <label>Chave PIX</label>
+                <input type="text" id="chavePix" placeholder="Chave para recebimento/pagamento">
+
+                <label>Endereço</label>
+                <input type="text" id="endereco" placeholder="Rua, Número, Bairro">
+
+                <label>Link da Localização (Maps)</label>
+                <input type="url" id="linkLocalizacao" placeholder="https://maps.google.com/...">
+
+                <label>Placa do Veículo</label>
+                <input type="text" id="placaVeiculo" placeholder="ABC-1234">
+
+                <label>Valor do Empréstimo (R$) *</label>
                 <select id="valor">
-                    <option value="300">R$ 300,00 (R$ 17,00/dia)</option>
-                    <option value="400">R$ 400,00 (R$ 22,00/dia)</option>
-                    <option value="500">R$ 500,00 (R$ 28,00/dia)</option>
-                    <option value="600">R$ 600,00 (R$ 33,00/dia)</option>
-                    <option value="700">R$ 700,00 (R$ 39,00/dia)</option>
-                    <option value="800">R$ 800,00 (R$ 44,00/dia)</option>
-                    <option value="900">R$ 900,00 (R$ 50,00/dia)</option>
-                    <option value="1000">R$ 1.000,00 (R$ 56,00/dia)</option>
+                    <option value="300">R$ 300,00</option>
+                    <option value="400">R$ 400,00</option>
+                    <option value="500">R$ 500,00</option>
+                    <option value="600">R$ 600,00</option>
+                    <option value="700">R$ 700,00</option>
+                    <option value="800">R$ 800,00</option>
+                    <option value="900">R$ 900,00</option>
+                    <option value="1000">R$ 1.000,00</option>
                 </select>
 
-                <label for="data">Data do Empréstimo:</label>
-                <input id="data" type="date">
+                <label>Data do Empréstimo *</label>
+                <input type="date" id="data" required>
 
-                <button onclick="salvarCliente()">Cadastrar Empréstimo</button>
+                <fieldset>
+                    <legend>Contatos de Referência</legend>
+                    <input type="text" id="ref1" placeholder="Referência 1 (Nome / Tel)">
+                    <input type="text" id="ref2" placeholder="Referência 2 (Nome / Tel)">
+                    <input type="text" id="ref3" placeholder="Referência 3 (Nome / Tel)">
+                </fieldset>
+
+                <fieldset>
+                    <legend>Anexar Documentos / Fotos</legend>
+                    <label>Foto do Cliente:</label>
+                    <input type="file" id="fotoCliente" accept="image/*">
+
+                    <label>Documento (RG/CNH Frente e Verso):</label>
+                    <input type="file" id="docFrenteVerso" accept="image/*">
+
+                    <label>Comprovante de Residência:</label>
+                    <input type="file" id="fotoResidencia" accept="image/*">
+
+                    <label>Print de Ganhos / App:</label>
+                    <input type="file" id="printGanhos" accept="image/*">
+                </fieldset>
+
+                <button type="submit" class="btn-submit">💾 Confirmar e Salvar Empréstimo</button>
+            </form>
+        </section>
+
+        <!-- TELA: DETALHES DO CLIENTE / SOLICITAÇÃO -->
+        <section id="detalhesCliente" class="tela">
+            <div id="detalhes">
+                <!-- Conteúdo injetado via JS -->
             </div>
         </section>
 
-        <!-- DETALHES DO CLIENTE -->
-        <section id="detalhesCliente" class="tela">
-            <div id="detalhes"></div>
-        </section>
     </main>
 
-    <!-- NAVEGAÇÃO INFERIOR -->
-    <nav>
-        <button onclick="abrirTela('dashboard')">🏠</button>
-        <button onclick="abrirTela('clientes')">👥</button>
-        <button onclick="abrirTela('novoCliente')">➕</button>
+    <!-- NAVEGAÇÃO INFERIOR (BOTTOM MENU) -->
+    <nav class="bottom-nav">
+        <button onclick="abrirTela('dashboard')" class="nav-item">
+            <span class="nav-icon">📊</span>
+            <span class="nav-text">Dashboard</span>
+        </button>
+        <button onclick="abrirTela('clientes')" class="nav-item">
+            <span class="nav-icon">👥</span>
+            <span class="nav-text">Clientes</span>
+        </button>
+        <button onclick="abrirTela('solicitacoes')" class="nav-item">
+            <span class="nav-icon">⏳</span>
+            <span class="nav-text">Solicitações</span>
+        </button>
+        <button onclick="abrirTela('cadastro')" class="nav-item">
+            <span class="nav-icon">➕</span>
+            <span class="nav-text">Novo</span>
+        </button>
     </nav>
 
+    <!-- MODAL DE VISUALIZAÇÃO DE IMAGEM EM TELA CHEIA -->
+    <div id="modalImagem" class="modal-imagem" onclick="fecharModalImagem()">
+        <span class="fechar-modal">&times;</span>
+        <img id="imgModalExpandida" src="" alt="Imagem Expandida">
+    </div>
+
+    <!-- SCRIPT DA APLICAÇÃO -->
     <script type="module" src="app.js"></script>
 </body>
 </html>
