@@ -34,7 +34,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
     const btnPwa = document.getElementById('btnInstalarPwa');
-    if (btnPwa) btnPwa.style.display = 'block';
+    if (btnPwa) btnPwa.style.display = 'inline-flex';
 });
 
 window.instalarPWA = function() {
@@ -48,6 +48,10 @@ window.instalarPWA = function() {
             const btnPwa = document.getElementById('btnInstalarPwa');
             if (btnPwa) btnPwa.style.display = 'none';
         });
+    } else {
+        alert('A instalação direta não está pronta no navegador.\n\n' + 
+              '• Se você já instalou o app, ele já está na sua tela inicial.\n' +
+              '• Se estiver no iOS (Safari), clique em "Compartilhar" > "Adicionar à Tela de Início".');
     }
 };
 
@@ -1085,7 +1089,7 @@ function atualizarDashboard() {
     }
 }
 
-// EXPOSIÇÃO GLOBAL
+// EXPOSIÇÃO GLOBAL DE FUNÇÕES (Módulo ES6)
 window.salvarCliente = salvarCliente;
 window.baixarParcelasSelecionadas = baixarParcelasSelecionadas;
 window.aplicarJurosSelecionadas = aplicarJurosSelecionadas;
