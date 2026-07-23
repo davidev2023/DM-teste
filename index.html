@@ -6,6 +6,10 @@
     <title>DM Financeira</title>
     <link rel="stylesheet" href="style.css">
     
+    <!-- Manifesto PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1e1e1e">
+
     <!-- CDN jsPDF para Geração de Comprovantes em PDF -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     
@@ -181,5 +185,52 @@
 
     <!-- SCRIPT DA APLICAÇÃO -->
     <script type="module" src="app.js"></script>
+
+    <!-- SCRIPT REGISTRO PWA E INSTALAÇÃO -->
+    <script>
+        // 1. Registro do Service Worker (apontando para service-worker.js)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(reg => console.log('Service Worker registrado com sucesso:', reg.scope))
+                    .catch(err => console.error('Erro ao registrar Service Worker:', err));
+            });
+        }
+
+        // 2. Lógica do botão de instalação do PWA
+        let deferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            const btnInstalar = document.getElementById('btnInstalarPwa');
+            if (btnInstalar) {
+                btnInstalar.style.display = 'inline-flex';
+            }
+        });
+
+        async function instalarPWA() {
+            if (!deferredPrompt) {
+                alert('A instalação direta não está pronta no navegador.\n\n' + 
+                      '• Se você já instalou o app, ele já está na sua tela inicial.\n' +
+                      '• Se estiver no iOS (Safari), clique em "Compartilhar" > "Adicionar à Tela de Início".');
+                return;
+            }
+
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log(`Resposta do usuário para instalação: ${outcome}`);
+            deferredPrompt = null;
+        }
+
+        window.addEventListener('appinstalled', () => {
+            console.log('PWA instalado com sucesso!');
+            const btnInstalar = document.getElementById('btnInstalarPwa');
+            if (btnInstalar) {
+                btnInstalar.style.display = 'none';
+            }
+        });
+    </script>
 </body>
 </html>
