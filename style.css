@@ -92,11 +92,17 @@ body {
     font-size: 0.75rem;
     font-weight: bold;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
+/* FORÇA O BOTÃO DE INSTALAÇÃO PWA A FICAR VISÍVEL */
 .btn-pwa {
-    background: #ffcc00;
-    color: #000;
+    display: inline-flex !important;
+    background: #ffcc00 !important;
+    color: #000000 !important;
+    border: none;
 }
 
 /* MENU INFERIOR (BOTTOM NAV) */
