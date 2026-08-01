@@ -24,7 +24,7 @@
         <p>Carregando dados...</p>
     </div>
 
-    <!-- CABEÇALHO SUPERIOR (APENAS ATUALIZAÇÃO E INSTALAÇÃO PWA) -->
+    <!-- CABEÇALHO SUPERIOR -->
     <header class="header-topo">
         <div class="header-content">
             <h1>DM Financeira</h1>
@@ -57,6 +57,16 @@
                 <div class="card-dash">
                     <h3>Em Aberto</h3>
                     <p id="totalAberto">R$ 0,00</p>
+                </div>
+                <!-- Card de Lucro do Empréstimo (Juros Originais) -->
+                <div class="card-dash" style="border-left: 4px solid #2980b9;">
+                    <h3>📈 Lucro dos Empréstimos (Juros)</h3>
+                    <p id="totalLucroEmprestimo">R$ 0,00</p>
+                </div>
+                <!-- Card de Juros de Atraso Acumulados -->
+                <div class="card-dash" style="border-left: 4px solid #c0392b;">
+                    <h3>⚠️ Juros de Atraso Acumulados</h3>
+                    <p id="totalJurosAtraso">R$ 0,00</p>
                 </div>
             </div>
 
@@ -107,17 +117,24 @@
                 <label>Placa do Veículo</label>
                 <input type="text" id="placaVeiculo" placeholder="ABC-1234">
 
-                <label>Valor do Empréstimo (R$) *</label>
-                <select id="valor">
-                    <option value="300">R$ 300,00</option>
-                    <option value="400">R$ 400,00</option>
-                    <option value="500">R$ 500,00</option>
-                    <option value="600">R$ 600,00</option>
-                    <option value="700">R$ 700,00</option>
-                    <option value="800">R$ 800,00</option>
-                    <option value="900">R$ 900,00</option>
-                    <option value="1000">R$ 1.000,00</option>
+                <label>Tipo de Empréstimo *</label>
+                <select id="tipoEmprestimo" onchange="atualizarOpcoesParcelas()">
+                    <option value="diario">Diário</option>
+                    <option value="semanal">Semanal</option>
+                    <option value="mensal">Mensal</option>
                 </select>
+
+                <label>Valor Emprestado (R$) *</label>
+                <input type="number" id="valor" required placeholder="Ex: 300" oninput="calcularValoresFormulario()">
+
+                <label>Quantidade de Parcelas *</label>
+                <input type="number" id="qtdParcelas" value="24" min="1" max="120" required oninput="calcularValoresFormulario()">
+
+                <label>Valor Total a Receber (R$) *</label>
+                <input type="number" id="valorTotal" required placeholder="Ex: 408" oninput="calcularValoresFormulario()">
+
+                <label>Valor de Cada Parcela (R$) *</label>
+                <input type="number" id="valorParcela" readonly placeholder="Calculado automaticamente" style="background-color: #2a2a2a; color: #ffcc00; font-weight: bold;">
 
                 <label>Data do Empréstimo *</label>
                 <input type="date" id="data" required>
@@ -157,7 +174,7 @@
 
     </main>
 
-    <!-- NAVEGAÇÃO INFERIOR (BOTTOM MENU) -->
+    <!-- NAVEGAÇÃO INFERIOR (BOTTOM NAV) -->
     <nav class="bottom-nav">
         <button onclick="abrirTela('dashboard')" class="nav-item">
             <span class="nav-icon">📊</span>
@@ -188,7 +205,6 @@
 
     <!-- SCRIPT REGISTRO PWA E INSTALAÇÃO -->
     <script>
-        // 1. Registro do Service Worker (apontando para service-worker.js)
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./service-worker.js')
@@ -197,7 +213,6 @@
             });
         }
 
-        // 2. Lógica do botão de instalação do PWA
         let deferredPrompt;
 
         window.addEventListener('beforeinstallprompt', (e) => {
