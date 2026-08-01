@@ -1,3 +1,7 @@
+// No topo do app.js
+import {atualizarDashboard} from './dashboard.js';
+import {calcularAtraso} from './utils.js'
+
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
     getFirestore,
@@ -6,7 +10,11 @@ import {
     getDocs,
     updateDoc,
     deleteDoc,
-    doc
+    doc,
+    getDoc,
+    setDoc,
+    enableIndexedDbPersistence,
+    CACHE_SIZE_UNLIMITED
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // CONFIGURAÇÃO DO FIREBASE
@@ -23,11 +31,49 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
+// ATIVAR PERSISTÊNCIA OFFLINE DO FIRESTORE
+enableIndexedDbPersistence(db, { cacheSizeBytes: CACHE_SIZE_UNLIMITED }).catch((err) => {
+    if (err.code == 'failed-precondition') {
+        console.warn('Persistência offline falhou: Múltiplas abas abertas ao mesmo tempo.');
+    } else if (err.code == 'unimplemented') {
+        console.warn('O navegador não suporta persistência offline.');
+    }
+});
+
 let clientes = [];
 let solicitacoes = [];
 let meuGrafico = null;
 let deferredPrompt = null;
 const FOTO_PADRAO = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
+
+// TABELA DE PARCELAS DIÁRIAS PADRÃO
+const TABELA_PARCELAS_DIARIAS = {
+    300: 17, 400: 22, 500: 28, 600: 33, 700: 39, 800: 44, 900: 50, 1000: 56
+};
+
+// FUNÇÃO INTELIGENTE DE TIMEOUT (Com fallback seguro para Cache Offline)
+async function buscarComTimeout(queryRef, tempoMs = 2500) {
+    try {
+        // Tenta buscar do servidor com limite de tempo
+        const promessaServidor = getDocs(queryRef);
+        const resultado = await Promise.race([
+            promessaServidor,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT_OFFLINE")), tempoMs))
+        ]);
+        return resultado;
+    } catch (e) {
+        console.log("Sem conexão ou timeout atingido. Buscando do cache local do dispositivo...");
+        // Se falhar ou expirar o tempo, força a leitura do cache local IndexedDB
+        return await getDocs(queryRef, { source: 'cache' });
+    }
+}
+
+function comTimeout(promessa, tempoMs = 2000) {
+    return Promise.race([
+        promessa,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT_OFFLINE")), tempoMs))
+    ]);
+}
 
 // SUPORTE PARA INSTALAÇÃO PWA
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -55,7 +101,69 @@ window.instalarPWA = function() {
     }
 };
 
-// FUNÇÃO PARA VERIFICAR E RECARREGAR ATUALIZAÇÕES
+window.calcularValoresFormulario = function() {
+    const tipo = document.getElementById("tipoEmprestimo")?.value || "diario";
+    const valorEmprestadoInput = document.getElementById("valor");
+    const qtdInput = document.getElementById("qtdParcelas");
+    const totalInput = document.getElementById("valorTotal");
+    const parcelaInput = document.getElementById("valorParcela");
+
+    if (!valorEmprestadoInput || !qtdInput || !totalInput || !parcelaInput) return;
+
+    const valorEmprestado = Number(valorEmprestadoInput.value || 0);
+
+    if (tipo === "diario") {
+        if (valorEmprestado > 0) {
+            let valorParcelaCalculado = 0;
+            if (TABELA_PARCELAS_DIARIAS[valorEmprestado]) {
+                valorParcelaCalculado = TABELA_PARCELAS_DIARIAS[valorEmprestado];
+            } else {
+                valorParcelaCalculado = Math.round((valorEmprestado * 1.36) / 24);
+            }
+            
+            const totalCalculado = valorParcelaCalculado * 24;
+            
+            totalInput.value = totalCalculado;
+            parcelaInput.value = valorParcelaCalculado;
+        } else {
+            totalInput.value = "";
+            parcelaInput.value = "";
+        }
+    } else {
+        const valorTotal = Number(totalInput.value || 0);
+        const qtdParcelas = Number(qtdInput.value || 1);
+
+        if (valorTotal > 0 && qtdParcelas > 0) {
+            const valorParcelaCalculado = (valorTotal / qtdParcelas).toFixed(2);
+            parcelaInput.value = valorParcelaCalculado;
+        } else {
+            parcelaInput.value = "";
+        }
+    }
+};
+
+window.atualizarOpcoesParcelas = function() {
+    const tipo = document.getElementById("tipoEmprestimo")?.value;
+    const inputQtd = document.getElementById("qtdParcelas");
+    const inputTotal = document.getElementById("valorTotal");
+
+    if (inputQtd) {
+        if (tipo === "diario") {
+            inputQtd.value = "24";
+        } else if (tipo === "semanal") {
+            inputQtd.value = "4";
+        } else if (tipo === "mensal") {
+            inputQtd.value = "1";
+        }
+    }
+
+    if (tipo !== "diario" && inputTotal) {
+        inputTotal.value = "";
+    }
+
+    window.calcularValoresFormulario();
+};
+
 window.verificarAtualizacao = function() {
     mostrarLoading("Verificando atualizações...");
     setTimeout(() => {
@@ -70,7 +178,6 @@ window.verificarAtualizacao = function() {
     }, 1000);
 };
 
-// INDICADOR DE CARREGAMENTO (LOADING)
 function mostrarLoading(mensagem = "Carregando dados...") {
     const overlay = document.getElementById("loadingOverlay");
     if (overlay) {
@@ -87,12 +194,10 @@ function esconderLoading() {
     }
 }
 
-// FORMATAR MOEDA
 function formatarMoeda(valor) {
     return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-// VISUALIZADOR DE IMAGEM EM TELA CHEIA
 window.abrirModalImagem = function(src) {
     if (!src) return;
     const modal = document.getElementById("modalImagem");
@@ -110,7 +215,6 @@ window.fecharModalImagem = function() {
     }
 };
 
-// CONVERTER E COMPACTAR IMAGEM PARA BASE64
 function converterImagemParaBase64(file) {
     return new Promise((resolve, reject) => {
         if (!file) {
@@ -146,56 +250,6 @@ function converterImagemParaBase64(file) {
     });
 }
 
-// CALCULAR ATRASO E DIÁRIAS ESPERADAS
-function calcularAtraso(cliente) {
-    if (!cliente.data) return { atraso: 0, esperadas: 0, status: 'verde' };
-
-    const [ano, mes, dia] = cliente.data.split('-').map(Number);
-    let dataInicio = new Date(ano, mes - 1, dia);
-
-    dataInicio.setDate(dataInicio.getDate() + 1);
-
-    if (dataInicio.getDay() === 0) {
-        dataInicio.setDate(dataInicio.getDate() + 1);
-    }
-
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-
-    if (hoje < dataInicio) {
-        return { atraso: 0, esperadas: 0, status: 'verde' };
-    }
-
-    let esperadasAteHoje = 0;
-    let dataAtual = new Date(dataInicio);
-
-    while (dataAtual <= hoje) {
-        if (dataAtual.getDay() !== 0) {
-            esperadasAteHoje++;
-        }
-        dataAtual.setDate(dataAtual.getDate() + 1);
-    }
-
-    const pagas = Number(cliente.pagas) || 0;
-    let esperadasAteOntem = esperadasAteHoje - 1;
-    if (esperadasAteOntem < 0) esperadasAteOntem = 0;
-
-    let atraso = esperadasAteOntem - pagas;
-    if (atraso < 0) atraso = 0;
-
-    let status = 'verde';
-    if (atraso > 0) {
-        status = 'vermelho';
-    } else if (pagas < esperadasAteHoje) {
-        status = 'amarelo';
-    } else {
-        status = 'verde';
-    }
-
-    return { atraso, esperadas: esperadasAteHoje, status };
-}
-
-// NAVEGAÇÃO ENTRE TELAS
 function abrirTela(idTela) {
     document.querySelectorAll('.tela').forEach(tela => {
         tela.classList.remove('ativa');
@@ -207,33 +261,47 @@ function abrirTela(idTela) {
     }
 }
 
-// CADASTRAR CLIENTE DIRETO
-async function salvarCliente() {
+async function notificarAlteracaoGlobal() {
     try {
-        let nome = document.getElementById("nome")?.value.trim() || "";
-        let cpf = document.getElementById("cpf")?.value.trim() || "";
-        let telefone = document.getElementById("telefone")?.value.trim() || "";
-        let chavePix = document.getElementById("chavePix")?.value.trim() || "";
-        let endereco = document.getElementById("endereco")?.value.trim() || "";
-        let linkLocalizacao = document.getElementById("linkLocalizacao")?.value.trim() || "";
-        let placaVeiculo = document.getElementById("placaVeiculo")?.value.trim() || "";
-        let valor = Number(document.getElementById("valor")?.value || 0);
-        let data = document.getElementById("data")?.value || "";
-        
-        let ref1 = document.getElementById("ref1")?.value.trim() || "";
-        let ref2 = document.getElementById("ref2")?.value.trim() || "";
-        let ref3 = document.getElementById("ref3")?.value.trim() || "";
+        const refDoc = doc(db, "controle", "sistema");
+        await comTimeout(setDoc(refDoc, { versao: Date.now(), ultimaModificacao: new Date().toISOString() }), 1500);
+    } catch (e) {
+        console.log("Alteração registrada offline.");
+    }
+}
 
-        let fotoPerfilFile = document.getElementById("fotoCliente")?.files[0];
-        let docFrenteVersoFile = document.getElementById("docFrenteVerso")?.files[0];
-        let fotoResidenciaFile = document.getElementById("fotoResidencia")?.files[0];
-        let printGanhosFile = document.getElementById("printGanhos")?.files[0];
+async function salvarCliente() {
+    let nome = document.getElementById("nome")?.value.trim() || "";
+    let cpf = document.getElementById("cpf")?.value.trim() || "";
+    let telefone = document.getElementById("telefone")?.value.trim() || "";
+    let chavePix = document.getElementById("chavePix")?.value.trim() || "";
+    let endereco = document.getElementById("endereco")?.value.trim() || "";
+    let linkLocalizacao = document.getElementById("linkLocalizacao")?.value.trim() || "";
+    let placaVeiculo = document.getElementById("placaVeiculo")?.value.trim() || "";
+    let valor = Number(document.getElementById("valor")?.value || 0);
+    let data = document.getElementById("data")?.value || "";
 
-        if (nome === "" || telefone === "" || data === "") {
-            alert("Preencha Nome, Telefone e Data do Empréstimo!");
-            return;
-        }
+    let tipoEmprestimo = document.getElementById("tipoEmprestimo")?.value || "diario";
+    let totalParcelas = Number(document.getElementById("qtdParcelas")?.value || (tipoEmprestimo === "diario" ? 24 : 1));
 
+    let valorTotal = Number(document.getElementById("valorTotal")?.value || 0);
+    let valorParcela = Number(document.getElementById("valorParcela")?.value || 0);
+
+    let ref1 = document.getElementById("ref1")?.value.trim() || "";
+    let ref2 = document.getElementById("ref2")?.value.trim() || "";
+    let ref3 = document.getElementById("ref3")?.value.trim() || "";
+
+    let fotoPerfilFile = document.getElementById("fotoCliente")?.files[0];
+    let docFrenteVersoFile = document.getElementById("docFrenteVerso")?.files[0];
+    let fotoResidenciaFile = document.getElementById("fotoResidencia")?.files[0];
+    let printGanhosFile = document.getElementById("printGanhos")?.files[0];
+
+    if (nome === "" || telefone === "" || data === "" || valorTotal === 0 || valorParcela === 0) {
+        alert("Preencha todos os campos obrigatórios, incluindo os valores!");
+        return;
+    }
+
+    try {
         mostrarLoading("Salvando novo cliente...");
 
         let fotoBase64 = await converterImagemParaBase64(fotoPerfilFile);
@@ -241,19 +309,16 @@ async function salvarCliente() {
         let resBase64 = await converterImagemParaBase64(fotoResidenciaFile);
         let printBase64 = await converterImagemParaBase64(printGanhosFile);
 
-        const tabelaParcelas = {
-            300: 17, 400: 22, 500: 28, 600: 33, 700: 39, 800: 44, 900: 50, 1000: 56
-        };
-
-        let parcela = tabelaParcelas[valor] || Math.round((valor * 1.35) / 24);
-
-        await addDoc(collection(db, "clientes"), {
+        await comTimeout(addDoc(collection(db, "clientes"), {
             nome, cpf, telefone, chavePix, endereco, linkLocalizacao, placaVeiculo,
             referencias: [ref1, ref2, ref3].filter(r => r !== ""),
-            valor, parcela, totalParcelas: 24, pagas: 0, data,
+            valor, valorTotal, valorParcela, parcela: valorParcela,
+            tipoEmprestimo, totalParcelas, pagas: 0, data,
             multasPorParcela: {},
             foto: fotoBase64, docFoto: docBase64, resFoto: resBase64, printFoto: printBase64
-        });
+        }), 2000);
+
+        await notificarAlteracaoGlobal();
 
         limpar();
         await mostrarClientes();
@@ -261,31 +326,38 @@ async function salvarCliente() {
         alert("Empréstimo cadastrado com sucesso!");
 
     } catch (error) {
-        console.error("Erro ao salvar:", error);
-        alert("Erro ao salvar: " + error.message);
+        console.log("Salvo offline (timeout atingido).");
+        limpar();
+        await mostrarClientes();
+        abrirTela('clientes');
+        alert("Salvo offline no dispositivo!");
     } finally {
         esconderLoading();
     }
 }
 
-// LISTAR CLIENTES E SOLICITAÇÕES
 async function mostrarClientes() {
     mostrarLoading("Buscando informações...");
     try {
         clientes = [];
         solicitacoes = [];
 
-        const querySnapshot = await getDocs(collection(db, "clientes"));
+        // Busca com inteligência de cache local
+        const querySnapshot = await buscarComTimeout(collection(db, "clientes"), 2000);
         querySnapshot.forEach((documento) => {
             clientes.push({ id: documento.id, ...documento.data() });
         });
 
-        const querySol = await getDocs(collection(db, "solicitacoes_pendentes"));
-        querySol.forEach((documento) => {
-            solicitacoes.push({ id: documento.id, ...documento.data() });
-        });
+        try {
+            const querySol = await buscarComTimeout(collection(db, "solicitacoes_pendentes"), 1500);
+            querySol.forEach((documento) => {
+                solicitacoes.push({ id: documento.id, ...documento.data() });
+            });
+        } catch (err) {
+            console.log("Solicitações buscadas do cache local.");
+        }
 
-        atualizarDashboard();
+        atualizarDashboard(clientes, formatarMoeda);
 
         let listaSol = document.getElementById("listaSolicitacoes");
         if (listaSol) {
@@ -332,13 +404,14 @@ async function mostrarClientes() {
 
             if (status === 'vermelho') {
                 iconeStatus = '🔴';
-                textoAtraso = `<strong style="color: #ff5555;">${atraso} parcelas em atraso</strong>`;
+                textoAtraso = `<strong style="color: #ff5555;">${atraso} parcela(s) em atraso</strong>`;
             } else if (status === 'amarelo') {
                 iconeStatus = '🟡';
                 textoAtraso = 'Em aberto (Hoje)';
             }
 
             let urlFoto = cliente.foto || cliente.fotoCliente || FOTO_PADRAO;
+            let tipoTxt = cliente.tipoEmprestimo ? cliente.tipoEmprestimo.toUpperCase() : 'DIÁRIO';
 
             lista.innerHTML += `
                 <div class="cliente" onclick="abrirCliente('${cliente.id}')">
@@ -346,12 +419,12 @@ async function mostrarClientes() {
                         <img src="${urlFoto}" class="avatar-cliente" alt="Foto">
                         <div>
                             <h3>${iconeStatus} ${cliente.nome}</h3>
-                            <p>CPF: ${cliente.cpf || 'Não informado'}</p>
+                            <p>CPF: ${cliente.cpf || 'Não informado'} | <span style="color:#ffcc00; font-weight:bold;">${tipoTxt}</span></p>
                             <p>🚘 Placa: ${cliente.placaVeiculo || 'N/A'}</p>
                         </div>
                     </div>
                     <p>💰 Empréstimo: ${formatarMoeda(cliente.valor)}</p>
-                    <p>🗓️ ${cliente.pagas}/${cliente.totalParcelas} pagas | Status: ${textoAtraso}</p>
+                    <p>🗓️ ${cliente.pagas}/${cliente.totalParcelas || 24} pagas | Status: ${textoAtraso}</p>
                 </div>
             `;
         });
@@ -363,7 +436,6 @@ async function mostrarClientes() {
     }
 }
 
-// DETALHES DA SOLICITAÇÃO PENDENTE
 function abrirSolicitacao(id) {
     let sol = solicitacoes.find(s => s.id === id);
     if (!sol) return;
@@ -381,6 +453,8 @@ function abrirSolicitacao(id) {
     let docImg = (sol.docFoto || sol.docFrenteVerso) ? `<div style="margin-top:10px;"><p><strong>Documento (RG/CNH):</strong></p><img src="${sol.docFoto || sol.docFrenteVerso}" class="img-anexo" onclick="abrirModalImagem('${sol.docFoto || sol.docFrenteVerso}')"></div>` : '<p style="color:#aaa;">📑 Documento não enviado</p>';
     let resImg = (sol.resFoto || sol.fotoResidencia) ? `<div style="margin-top:10px;"><p><strong>Comprovante de Residência:</strong></p><img src="${sol.resFoto || sol.fotoResidencia}" class="img-anexo" onclick="abrirModalImagem('${sol.resFoto || sol.fotoResidencia}')"></div>` : '<p style="color:#aaa;">🏠 Residência não enviada</p>';
     let printImg = (sol.printFoto || sol.printGanhos) ? `<div style="margin-top:10px;"><p><strong>Comprovante de Renda / App:</strong></p><img src="${sol.printFoto || sol.printGanhos}" class="img-anexo" onclick="abrirModalImagem('${sol.printFoto || sol.printGanhos}')"></div>` : '<p style="color:#aaa;">📊 Print de Ganhos não enviado</p>';
+
+    let valorP = sol.valorParcela || sol.parcela || 0;
 
     detalhes.innerHTML = `
     <div class="card" style="text-align: center;">
@@ -403,7 +477,7 @@ function abrirSolicitacao(id) {
         <hr style="margin: 10px 0; border-color: #333;">
 
         <p style="text-align: left;">💰 <strong>Valor Pedido:</strong> ${formatarMoeda(sol.valor)}</p>
-        <p style="text-align: left;">💵 <strong>Parcela Diária Estimada:</strong> ${formatarMoeda(sol.parcela)}/dia</p>
+        <p style="text-align: left;">💵 <strong>Parcela Estimada:</strong> ${formatarMoeda(valorP)}</p>
 
         <h3 style="color:#ffcc00; margin-top:15px; text-align:left;">📁 Documentos Anexados (Clique para ampliar):</h3>
         <div style="text-align: left; margin-top: 10px;">
@@ -424,7 +498,6 @@ function abrirSolicitacao(id) {
     abrirTela('detalhesCliente');
 }
 
-// APROVAR SOLICITAÇÃO
 async function aprovarSolicitacao(id) {
     let sol = solicitacoes.find(s => s.id === id);
     if (!sol) return;
@@ -435,7 +508,12 @@ async function aprovarSolicitacao(id) {
 
     try {
         mostrarLoading("Aprovando solicitação...");
-        await addDoc(collection(db, "clientes"), {
+        
+        let valorP = Number(sol.valorParcela || sol.parcela || 0);
+        let totP = Number(sol.totalParcelas || 24);
+        let valTot = Number(sol.valorTotal || (valorP * totP));
+
+        await comTimeout(addDoc(collection(db, "clientes"), {
             nome: sol.nome || "",
             cpf: sol.cpf || "",
             telefone: sol.telefone || "",
@@ -445,8 +523,11 @@ async function aprovarSolicitacao(id) {
             placaVeiculo: sol.placaVeiculo || "",
             referencias: sol.referencias || [],
             valor: Number(sol.valor || 0),
-            parcela: Number(sol.parcela || 0),
-            totalParcelas: Number(sol.totalParcelas || 24),
+            valorTotal: valTot,
+            valorParcela: valorP,
+            parcela: valorP,
+            tipoEmprestimo: sol.tipoEmprestimo || "diario",
+            totalParcelas: totP,
             pagas: 0,
             data: dataHoje,
             multasPorParcela: {},
@@ -454,49 +535,54 @@ async function aprovarSolicitacao(id) {
             docFoto: sol.docFoto || sol.docFrenteVerso || "",
             resFoto: sol.resFoto || sol.fotoResidencia || "",
             printFoto: sol.printFoto || sol.printGanhos || ""
-        });
+        }), 2000);
 
-        await deleteDoc(doc(db, "solicitacoes_pendentes", id));
+        await comTimeout(deleteDoc(doc(db, "solicitacoes_pendentes", id)), 2000);
+        await notificarAlteracaoGlobal();
 
         alert("Solicitação Aprovada!");
         await mostrarClientes();
         abrirTela('clientes');
     } catch (error) {
-        console.error("Erro ao aprovar:", error);
-        alert("Erro ao aprovar solicitação.");
+        console.log("Aprovado no modo offline.");
+        alert("Solicitação processada no modo offline.");
+        await mostrarClientes();
+        abrirTela('clientes');
     } finally {
         esconderLoading();
     }
 }
 
-// RECUSAR SOLICITAÇÃO
 async function recusarSolicitacao(id) {
     if (!confirm("Deseja recusar e excluir esta solicitação?")) return;
 
     try {
         mostrarLoading("Removendo solicitação...");
-        await deleteDoc(doc(db, "solicitacoes_pendentes", id));
+        await comTimeout(deleteDoc(doc(db, "solicitacoes_pendentes", id)), 2000);
+        await notificarAlteracaoGlobal();
         alert("Solicitação removida.");
         await mostrarClientes();
         abrirTela('solicitacoes');
     } catch (error) {
-        console.error("Erro ao recusar:", error);
+        console.log("Processado offline.");
+        alert("Processado offline.");
+        await mostrarClientes();
+        abrirTela('solicitacoes');
     } finally {
         esconderLoading();
     }
 }
 
-// DETALHES DO CLIENTE ATIVO
 function abrirCliente(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
 
-    const { atraso, esperadas, status } = calcularAtraso(cliente);
+    const { atraso, status } = calcularAtraso(cliente);
     let detalhes = document.getElementById("detalhes");
     if (!detalhes) return;
 
     let textoStatus = '🟢 Em Dia';
-    if (status === 'vermelho') textoStatus = `🔴 ATRASADO (${atraso} diária(s) pendentes)`;
+    if (status === 'vermelho') textoStatus = `🔴 ATRASADO (${atraso} parcela(s) pendentes)`;
     if (status === 'amarelo') textoStatus = '🟡 Em aberto hoje';
 
     let urlFoto = cliente.foto || cliente.fotoCliente || FOTO_PADRAO;
@@ -515,55 +601,72 @@ function abrirCliente(id) {
     if (cliente.data) {
         const [ano, mes, dia] = cliente.data.split('-').map(Number);
         dataAtual = new Date(ano, mes - 1, dia);
-        dataAtual.setDate(dataAtual.getDate() + 1);
     }
 
+    let tipo = cliente.tipoEmprestimo || 'diario';
+    let totalP = Number(cliente.totalParcelas) || (tipo === 'diario' ? 24 : 1);
     let multas = cliente.multasPorParcela || {};
-    let valorBaseDiaria = Number(cliente.parcela) || 0;
+    let valorBaseParcela = Number(cliente.valorParcela || cliente.parcela || 0);
 
-    for (let i = 1; i <= cliente.totalParcelas; i++) {
-        if (dataAtual.getDay() === 0) {
+    for (let i = 1; i <= totalP; i++) {
+        if (tipo === 'diario') {
             dataAtual.setDate(dataAtual.getDate() + 1);
+            if (dataAtual.getDay() === 0) dataAtual.setDate(dataAtual.getDate() + 1);
+        } else if (tipo === 'semanal') {
+            dataAtual.setDate(dataAtual.getDate() + 7);
+        } else if (tipo === 'mensal') {
+            dataAtual.setMonth(dataAtual.getMonth() + 1);
         }
 
         let diaFmt = String(dataAtual.getDate()).padStart(2, '0');
         let mesFmt = String(dataAtual.getMonth() + 1).padStart(2, '0');
         let dataTexto = `${diaFmt}/${mesFmt}`;
 
+        const hojeSemHora = new Date();
+        hojeSemHora.setHours(0, 0, 0, 0);
+
+        const dataParcelaSemHora = new Date(dataAtual);
+        dataParcelaSemHora.setHours(0, 0, 0, 0);
+
         let classeStatus = 'pendente';
         let statusTxt = '⏳ Pendente';
 
         if (i <= cliente.pagas) {
-            classeStatus = 'paga';
-            statusTxt = '✅ Paga';
-        } else if (i < esperadas) {
-            classeStatus = 'atrasada';
-            statusTxt = '🔴 Atrasada';
-        } else if (i === esperadas) {
-            classeStatus = 'pendente';
-            statusTxt = '🟡 Em Aberto (Hoje)';
+            classeStatus = "paga";
+            statusTxt = "✅ Paga";
+        } else if (dataParcelaSemHora < hojeSemHora) {
+            classeStatus = "atrasada";
+            statusTxt = "🔴 Atrasada";
+        } else if (dataParcelaSemHora.getTime() === hojeSemHora.getTime()) {
+            classeStatus = "pendente";
+            statusTxt = "🟡 Em Aberto (Hoje)";
+        } else {
+            classeStatus = "pendente";
+            statusTxt = "⏳ Pendente";
         }
 
         let multaIndividual = multas[i] || 0;
-        let valorFinalDiaria = valorBaseDiaria + multaIndividual;
+        let valorFinalDiaria = valorBaseParcela + multaIndividual;
+        let rotuloPeriodo = tipo === 'diario' ? 'Diária' : (tipo === 'semanal' ? 'Semana' : 'Parcela');
 
         parcelasHtml += `
             <div class="item-parcela ${classeStatus}">
                 <div>
-                    <strong>Diária ${i} (${dataTexto})</strong> - ${formatarMoeda(valorFinalDiaria)}
+                    <strong>${rotuloPeriodo} ${i} (${dataTexto})</strong> - ${formatarMoeda(valorFinalDiaria)}
                     <span style="font-size: 11px; display: block; color: #aaa;">${statusTxt}</span>
                 </div>
                 <input type="checkbox" class="chk-parcela" data-num="${i}" data-data="${dataTexto}" data-status="${classeStatus}" data-valor="${valorFinalDiaria}">
             </div>
         `;
-
-        dataAtual.setDate(dataAtual.getDate() + 1);
     }
+
+    let rotuloValor = tipo === 'diario' ? 'Diário' : (tipo === 'semanal' ? 'Semanal' : 'Mensal');
 
     detalhes.innerHTML = `
     <div class="card" style="text-align: center;">
         <img src="${urlFoto}" class="avatar-detalhe" alt="Foto Perfil" onclick="abrirModalImagem('${urlFoto}')">
         <h2>${cliente.nome}</h2>
+        <p style="text-align: left;"><strong>Tipo:</strong> <span style="color:#ffcc00; font-weight:bold;">${tipo.toUpperCase()}</span></p>
         <p style="text-align: left;"><strong>Status:</strong> ${textoStatus}</p>
         <p style="text-align: left;"><strong>CPF:</strong> ${cliente.cpf || 'Não informado'}</p>
         <p style="text-align: left;"><strong>Telefone:</strong> ${cliente.telefone || 'Não informado'}</p>
@@ -581,9 +684,9 @@ function abrirCliente(id) {
 
         <hr style="margin: 10px 0; border-color: #333;">
 
-        <p style="text-align: left;">💰 <strong>Valor Diário Base:</strong> ${formatarMoeda(cliente.parcela)}/dia</p>
+        <p style="text-align: left;">💰 <strong>Valor ${rotuloValor} Base:</strong> ${formatarMoeda(valorBaseParcela)}</p>
         <p style="text-align: left;">🗓️ <strong>Data Empréstimo:</strong> ${cliente.data ? cliente.data.split('-').reverse().join('/') : 'N/A'}</p>
-        <p style="text-align: left;">🗓️ <strong>Progresso:</strong> ${cliente.pagas}/${cliente.totalParcelas} pagas</p>
+        <p style="text-align: left;">🗓️ <strong>Progresso:</strong> ${cliente.pagas}/${totalP} pagas</p>
         
         <div style="text-align: left; margin-top: 10px;">
             <h3 style="color: #ffcc00; font-size: 0.95rem; margin-bottom: 5px;">📅 Selecionar Parcelas:</h3>
@@ -598,6 +701,7 @@ function abrirCliente(id) {
             <button onclick="enviarComprovanteSelecionado('${cliente.id}')" style="background: #8e44ad;">📄 Enviar Comprovante em PDF no WhatsApp</button>
             <button onclick="whatsapp('${cliente.id}')" style="background: #2980b9;">📲 Cobrar no WhatsApp</button>
             <button onclick="abrirModalEditar('${cliente.id}')" style="background: #e67e22;">✏️ Editar Dados do Cliente</button>
+            <button onclick="abrirModalNovoEmprestimo('${cliente.id}')" style="background: #27ae60;">➕ Criar Novo Empréstimo para este Cliente</button>
         </div>
 
         <div style="text-align: left; margin-top: 15px;">
@@ -614,7 +718,6 @@ function abrirCliente(id) {
     abrirTela('detalhesCliente');
 }
 
-// ABRIR EDIÇÃO
 function abrirModalEditar(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
@@ -625,6 +728,10 @@ function abrirModalEditar(id) {
     let ref1 = (cliente.referencias && cliente.referencias[0]) ? cliente.referencias[0] : "";
     let ref2 = (cliente.referencias && cliente.referencias[1]) ? cliente.referencias[1] : "";
     let ref3 = (cliente.referencias && cliente.referencias[2]) ? cliente.referencias[2] : "";
+
+    let tipo = cliente.tipoEmprestimo || "diario";
+    let valorP = cliente.valorParcela || cliente.parcela || 0;
+    let valorTot = cliente.valorTotal || (valorP * (cliente.totalParcelas || 24));
 
     detalhes.innerHTML = `
     <div class="card">
@@ -651,8 +758,21 @@ function abrirModalEditar(id) {
         <label>Placa do Veículo:</label>
         <input type="text" id="editPlacaVeiculo" value="${cliente.placaVeiculo || ''}">
 
-        <label>Valor Diário (R$):</label>
-        <input type="number" id="editParcela" value="${cliente.parcela || 0}">
+        <label>Tipo de Empréstimo:</label>
+        <select id="editTipoEmprestimo">
+            <option value="diario" ${tipo === 'diario' ? 'selected' : ''}>Diário</option>
+            <option value="semanal" ${tipo === 'semanal' ? 'selected' : ''}>Semanal</option>
+            <option value="mensal" ${tipo === 'mensal' ? 'selected' : ''}>Mensal</option>
+        </select>
+
+        <label>Quantidade de Parcelas:</label>
+        <input type="number" id="editTotalParcelas" value="${cliente.totalParcelas || 24}">
+
+        <label>Valor Total a Receber (R$):</label>
+        <input type="number" id="editValorTotal" value="${valorTot}">
+
+        <label>Valor da Parcela (R$):</label>
+        <input type="number" id="editParcela" value="${valorP}">
 
         <label>Data do Empréstimo:</label>
         <input type="date" id="editData" value="${cliente.data || ''}">
@@ -683,7 +803,6 @@ function abrirModalEditar(id) {
     `;
 }
 
-// SALVAR EDIÇÃO
 async function salvarEdicaoCliente(id) {
     try {
         let clienteAntigo = clientes.find(c => c.id === id);
@@ -698,6 +817,9 @@ async function salvarEdicaoCliente(id) {
         let endereco = document.getElementById("editEndereco").value.trim();
         let linkLocalizacao = document.getElementById("editLinkLocalizacao").value.trim();
         let placaVeiculo = document.getElementById("editPlacaVeiculo").value.trim();
+        let tipoEmprestimo = document.getElementById("editTipoEmprestimo").value;
+        let totalParcelas = Number(document.getElementById("editTotalParcelas").value || 24);
+        let valorTotal = Number(document.getElementById("editValorTotal").value || 0);
         let parcela = Number(document.getElementById("editParcela").value || 0);
         let data = document.getElementById("editData").value;
 
@@ -715,24 +837,29 @@ async function salvarEdicaoCliente(id) {
         let resFoto = fileRes ? await converterImagemParaBase64(fileRes) : (clienteAntigo.resFoto || clienteAntigo.fotoResidencia || "");
         let printFoto = filePrint ? await converterImagemParaBase64(filePrint) : (clienteAntigo.printFoto || clienteAntigo.printGanhos || "");
 
-        await updateDoc(doc(db, "clientes", id), {
-            nome, cpf, telefone, chavePix, endereco, linkLocalizacao, placaVeiculo, parcela, data,
+        await comTimeout(updateDoc(doc(db, "clientes", id), {
+            nome, cpf, telefone, chavePix, endereco, linkLocalizacao, placaVeiculo,
+            tipoEmprestimo, totalParcelas, valorTotal,
+            valorParcela: parcela, parcela, data,
             referencias: [ref1, ref2, ref3].filter(r => r !== ""),
             foto, docFoto, resFoto, printFoto
-        });
+        }), 2000);
+
+        await notificarAlteracaoGlobal();
 
         alert("Dados atualizados com sucesso!");
         await mostrarClientes();
         abrirCliente(id);
     } catch (e) {
-        console.error(e);
-        alert("Erro ao atualizar dados.");
+        console.log("Atualizado offline no dispositivo.");
+        alert("Atualizado no dispositivo (offline).");
+        await mostrarClientes();
+        abrirCliente(id);
     } finally {
         esconderLoading();
     }
 }
 
-// DAR BAIXA NAS PARCELAS
 async function baixarParcelasSelecionadas(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
@@ -746,65 +873,94 @@ async function baixarParcelasSelecionadas(id) {
 
     let maiorNum = Math.max(...selecionadas);
 
-    if (confirm(`Confirmar pagamento até a diária Nº ${maiorNum}?`)) {
+    if (confirm(`Confirmar pagamento até a parcela Nº ${maiorNum}?`)) {
         try {
             mostrarLoading("Registrando baixa...");
-            await updateDoc(doc(db, "clientes", id), { pagas: maiorNum });
+            await comTimeout(updateDoc(doc(db, "clientes", id), { pagas: maiorNum }), 2000);
+            await notificarAlteracaoGlobal();
             cliente.pagas = maiorNum;
             alert("Pagamento registrado!");
             await mostrarClientes();
             abrirCliente(id);
         } catch (e) {
-            alert("Erro ao registrar pagamento.");
+            console.log("Baixa registrada offline.");
+            cliente.pagas = maiorNum;
+            alert("Baixa registrada no dispositivo (offline).");
+            await mostrarClientes();
+            abrirCliente(id);
         } finally {
             esconderLoading();
         }
     }
 }
 
-// APLICAR JUROS SELECIONADAS
 async function aplicarJurosSelecionadas(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
 
-    let selecionadas = Array.from(document.querySelectorAll('.chk-parcela:checked')).map(el => Number(el.dataset.num));
+    let selecionadas = Array.from(document.querySelectorAll(".chk-parcela:checked"))
+        .map(el => Number(el.dataset.num));
 
     if (selecionadas.length === 0) {
-        alert("Selecione as parcelas em atraso que deseja cobrar juros!");
+        alert("Selecione as parcelas que deseja calcular os juros!");
         return;
     }
 
     let multasAtuais = cliente.multasPorParcela || {};
 
-    if (confirm(`Adicionar R$ 1,50 de juros APENAS nas parcelas selecionadas (${selecionadas.join(', ')})?`)) {
-        try {
-            mostrarLoading("Aplicando juros...");
-            selecionadas.forEach(num => {
-                multasAtuais[num] = (multasAtuais[num] || 0) + 1.50;
-            });
+    const tipo = cliente.tipoEmprestimo || "diario";
+    const [ano, mes, dia] = cliente.data.split("-").map(Number);
+    const dataInicio = new Date(ano, mes - 1, dia);
 
-            await updateDoc(doc(db, "clientes", id), { multasPorParcela: multasAtuais });
-            cliente.multasPorParcela = multasAtuais;
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
 
-            alert("Juros adicionados apenas nas parcelas selecionadas!");
-            await mostrarClientes();
-            abrirCliente(id);
-        } catch (e) {
-            console.error(e);
-            alert("Erro ao aplicar juros na parcela.");
-        } finally {
-            esconderLoading();
+    selecionadas.forEach(numeroParcela => {
+        let vencimento = new Date(dataInicio);
+        for (let i = 1; i <= numeroParcela; i++) {
+            if (tipo === "diario") {
+                vencimento.setDate(vencimento.getDate() + 1);
+                if (vencimento.getDay() === 0) vencimento.setDate(vencimento.getDate() + 1);
+            } else if (tipo === "semanal") {
+                vencimento.setDate(vencimento.getDate() + 7);
+            } else {
+                vencimento.setMonth(vencimento.getMonth() + 1);
+            }
         }
+
+        let diasAtraso = Math.floor((hoje - vencimento) / (1000 * 60 * 60 * 24));
+        if (diasAtraso <= 0) {
+            multasAtuais[numeroParcela] = 0;
+        } else {
+            multasAtuais[numeroParcela] = Number((diasAtraso * 1.50).toFixed(2));
+        }
+    });
+
+    try {
+        mostrarLoading("Calculando juros...");
+        await comTimeout(updateDoc(doc(db, "clientes", id), { multasPorParcela: multasAtuais }), 2000);
+        await notificarAlteracaoGlobal();
+        cliente.multasPorParcela = multasAtuais;
+        alert("Juros calculados com sucesso!");
+        await mostrarClientes();
+        abrirCliente(id);
+    } catch (e) {
+        console.log("Juros calculados offline.");
+        cliente.multasPorParcela = multasAtuais;
+        alert("Juros calculados no dispositivo (offline).");
+        await mostrarClientes();
+        abrirCliente(id);
+    } finally {
+        esconderLoading();
     }
 }
 
-// COMPROVANTE PDF
 async function enviarComprovanteSelecionado(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
 
     let multas = cliente.multasPorParcela || {};
-    let valorBase = Number(cliente.parcela) || 0;
+    let valorBase = Number(cliente.valorParcela || cliente.parcela || 0);
 
     let valorTotal = 0;
     let selecionadas = Array.from(document.querySelectorAll('.chk-parcela:checked')).map(el => {
@@ -827,10 +983,11 @@ async function enviarComprovanteSelecionado(id) {
     if (maiorNum > (cliente.pagas || 0)) {
         try {
             mostrarLoading("Gerando comprovante...");
-            await updateDoc(doc(db, "clientes", id), { pagas: maiorNum });
+            await comTimeout(updateDoc(doc(db, "clientes", id), { pagas: maiorNum }), 2000);
+            await notificarAlteracaoGlobal();
             cliente.pagas = maiorNum;
         } catch (e) {
-            console.error("Erro ao registrar baixa automática:", e);
+            cliente.pagas = maiorNum;
         } finally {
             esconderLoading();
         }
@@ -847,10 +1004,7 @@ async function enviarComprovanteSelecionado(id) {
     }
 
     const { jsPDF } = window.jspdf;
-    const docPdf = new jsPDF({
-        unit: "mm",
-        format: [80, 160]
-    });
+    const docPdf = new jsPDF({ unit: "mm", format: [80, 160] });
 
     docPdf.setFillColor(20, 20, 20);
     docPdf.rect(0, 0, 80, 22, "F");
@@ -892,13 +1046,13 @@ async function enviarComprovanteSelecionado(id) {
 
     y += 7;
     docPdf.setFont("helvetica", "bold");
-    docPdf.text("Diárias Pagas:", 8, y);
+    docPdf.text("Parcela(s):", 8, y);
     docPdf.setFont("helvetica", "normal");
     docPdf.text(detalheDiarias, 32, y, { maxWidth: 40 });
 
     y += 10;
     docPdf.setFont("helvetica", "bold");
-    docPdf.text("Qtd. Diárias:", 8, y);
+    docPdf.text("Qtd. Parcelas:", 8, y);
     docPdf.setFont("helvetica", "normal");
     docPdf.text(`${qtdDiarias}x`, 32, y);
 
@@ -920,30 +1074,20 @@ async function enviarComprovanteSelecionado(id) {
 
     let nomeLimpo = cliente.nome ? cliente.nome.replace(/\s+/g, '_') : 'Cliente';
     let numsStr = selecionadas.map(s => s.num).join('_');
-    let nomeArquivo = `Comprovante_${nomeLimpo}_Diaria_${numsStr}.pdf`;
+    let nomeArquivo = `Comprovante_${nomeLimpo}_Parcela_${numsStr}.pdf`;
     docPdf.save(nomeArquivo);
 
     await mostrarClientes();
     abrirCliente(id);
 
-    let mensagem = `📄 *COMPROVANTE DE PAGAMENTO*
-
-🏦 *DM Financeira*
-
-👤 *Cliente:* ${cliente.nome}
-🗓️ *Diária(s) Pagas:* ${detalheDiarias} (${qtdDiarias}x)
-💰 *Valor Pago:* ${formatarMoeda(valorTotal)}
-
-O seu comprovante em PDF foi gerado e baixado. Anexando a seguir! 👍`;
+    let mensagem = `📄 *COMPROVANTE DE PAGAMENTO*\n\n🏦 *DM Financeira*\n\n👤 *Cliente:* ${cliente.nome}\n🗓️ *Parcela(s) Pagas:* ${detalheDiarias} (${qtdDiarias}x)\n💰 *Valor Pago:* ${formatarMoeda(valorTotal)}\n\nO seu comprovante em PDF foi gerado e baixado. Anexando a seguir! 👍`;
 
     let url = `https://wa.me/55${numLimpo}?text=${encodeURIComponent(mensagem)}`;
-    
     setTimeout(() => {
         window.open(url, "_blank");
     }, 800);
 }
 
-// WHATSAPP
 function whatsapp(id) {
     let cliente = clientes.find(c => c.id === id);
     if (!cliente) return;
@@ -956,7 +1100,7 @@ function whatsapp(id) {
 
     const { atraso } = calcularAtraso(cliente);
     let multas = cliente.multasPorParcela || {};
-    let valorBase = Number(cliente.parcela) || 0;
+    let valorBase = Number(cliente.valorParcela || cliente.parcela || 0);
 
     let selecionadas = Array.from(document.querySelectorAll('.chk-parcela:checked'));
     
@@ -968,7 +1112,7 @@ function whatsapp(id) {
             let num = Number(el.dataset.num);
             let val = Number(el.dataset.valor) || (valorBase + (multas[num] || 0));
             totalCobrar += val;
-            detalhesLista.push(`• Diária ${num} (${el.dataset.data}): ${formatarMoeda(val)}`);
+            detalhesLista.push(`• Parcela ${num} (${el.dataset.data}): ${formatarMoeda(val)}`);
         });
     } else {
         if (atraso > 0) {
@@ -977,7 +1121,7 @@ function whatsapp(id) {
             for (let i = inicio; i <= fim; i++) {
                 let val = valorBase + (multas[i] || 0);
                 totalCobrar += val;
-                detalhesLista.push(`• Diária ${i}: ${formatarMoeda(val)}`);
+                detalhesLista.push(`• Parcela ${i}: ${formatarMoeda(val)}`);
             }
         }
     }
@@ -985,10 +1129,10 @@ function whatsapp(id) {
     let mensagem = `Olá *${cliente.nome}*, passando para lembrar dos seus pagamentos da *DM Financeira*:\n`;
 
     if (detalhesLista.length > 0) {
-        mensagem += `\n🔴 *Diárias a Pagar / Atrasadas:*\n` + detalhesLista.join('\n');
+        mensagem += `\n🔴 *Parcelas a Pagar / Atrasadas:*\n` + detalhesLista.join('\n');
         mensagem += `\n\n✅ *TOTAL A PAGAR:* *${formatarMoeda(totalCobrar)}*`;
     } else {
-        mensagem += `\n🟢 *Diária de Hoje:* ${formatarMoeda(valorBase)}`;
+        mensagem += `\n🟢 *Parcela de Hoje:* ${formatarMoeda(valorBase)}`;
         mensagem += `\n\n✅ *TOTAL:* *${formatarMoeda(valorBase)}*`;
     }
 
@@ -998,98 +1142,186 @@ function whatsapp(id) {
     window.open(url, "_blank");
 }
 
-// EXCLUIR CLIENTE
 async function excluirCliente(id) {
     if (!confirm("Deseja realmente excluir este cliente?")) return;
 
     try {
         mostrarLoading("Excluindo cliente...");
-        await deleteDoc(doc(db, "clientes", id));
+        await comTimeout(deleteDoc(doc(db, "clientes", id)), 2000);
+        await notificarAlteracaoGlobal();
         alert("Cliente excluído!");
         await mostrarClientes();
         abrirTela('clientes');
     } catch (error) {
-        alert("Erro ao excluir cliente.");
+        console.log("Removido offline.");
+        alert("Removido no dispositivo (offline).");
+        await mostrarClientes();
+        abrirTela('clientes');
     } finally {
         esconderLoading();
     }
 }
 
-// LIMPAR FORMULÁRIO
 function limpar() {
-    const ids = ["nome", "cpf", "telefone", "chavePix", "endereco", "linkLocalizacao", "placaVeiculo", "data", "ref1", "ref2", "ref3", "fotoCliente", "docFrenteVerso", "fotoResidencia", "printGanhos"];
+    const ids = ["nome", "cpf", "telefone", "chavePix", "endereco", "linkLocalizacao", "placaVeiculo", "data", "ref1", "ref2", "ref3", "fotoCliente", "docFrenteVerso", "fotoResidencia", "printGanhos", "valorTotal", "valorParcela"];
     ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = "";
     });
 
     const valorEl = document.getElementById("valor");
-    if (valorEl) valorEl.value = "300";
+    if (valorEl) valorEl.value = "";
+
+    const tipoEl = document.getElementById("tipoEmprestimo");
+    if (tipoEl) tipoEl.value = "diario";
+
+    const qtdEl = document.getElementById("qtdParcelas");
+    if (qtdEl) qtdEl.value = "24";
 }
 
-// DASHBOARD
-function atualizarDashboard() {
-    let totalClientes = clientes.length;
-    let emprestado = 0;
-    let recebido = 0;
-    let aberto = 0;
+function abrirModalNovoEmprestimo(id) {
+    let cliente = clientes.find(c => c.id === id);
+    if (!cliente) return;
 
-    clientes.forEach(cliente => {
-        let v = Number(cliente.valor) || 0;
-        let p = Number(cliente.parcela) || 0;
-        let pagas = Number(cliente.pagas) || 0;
-        let totalP = Number(cliente.totalParcelas) || 24;
+    let detalhes = document.getElementById("detalhes");
+    if (!detalhes) return;
 
-        emprestado += v;
-        recebido += p * pagas;
-        aberto += (p * totalP) - (p * pagas);
-    });
+    let dataHoje = new Date().toISOString().split('T')[0];
 
-    const elTotal = document.getElementById("totalClientes");
-    const elEmp = document.getElementById("totalEmprestado");
-    const elRec = document.getElementById("totalRecebido");
-    const elAbe = document.getElementById("totalAberto");
+    detalhes.innerHTML = `
+    <div class="card">
+        <h2 style="color:#ffcc00; text-align:center; margin-bottom:15px;">➕ Novo Empréstimo</h2>
+        <p style="text-align:center; color:#fff; font-weight:bold;">Cliente: ${cliente.nome}</p>
+        
+        <label>Tipo de Empréstimo:</label>
+        <select id="novoTipoEmprestimo" onchange="atualizarOpcoesNovoEmprestimo()">
+            <option value="diario">Diário</option>
+            <option value="semanal">Semanal</option>
+            <option value="mensal">Mensal</option>
+        </select>
 
-    if (elTotal) elTotal.innerText = totalClientes;
-    if (elEmp) elEmp.innerText = formatarMoeda(emprestado);
-    if (elRec) elRec.innerText = formatarMoeda(recebido);
-    if (elAbe) elAbe.innerText = formatarMoeda(aberto);
+        <label>Valor Solicitado (R$):</label>
+        <input type="number" id="novoValor" placeholder="Ex: 500" oninput="calcularValoresNovoEmprestimo()">
 
-    const ctx = document.getElementById('graficoDashboard');
-    if (ctx && window.Chart) {
-        if (meuGrafico) {
-            meuGrafico.destroy();
+        <label>Quantidade de Parcelas:</label>
+        <input type="number" id="novoQtdParcelas" value="24" oninput="calcularValoresNovoEmprestimo()">
+
+        <label>Valor Total a Receber (R$):</label>
+        <input type="number" id="novoValorTotal" placeholder="Ex: 672" oninput="calcularValoresNovoEmprestimo()">
+
+        <label>Valor da Parcela (R$):</label>
+        <input type="number" id="novoValorParcela" placeholder="Ex: 28">
+
+        <label>Data do Empréstimo:</label>
+        <input type="date" id="novoData" value="${dataHoje}">
+
+        <button onclick="salvarNovoEmprestimo('${cliente.id}')" style="background:#27ae60; margin-top:15px;">💾 Confirmar Novo Empréstimo</button>
+        <button onclick="abrirCliente('${cliente.id}')" style="background:#333; margin-top:5px;">❌ Cancelar</button>
+    </div>
+    `;
+}
+
+window.atualizarOpcoesNovoEmprestimo = function() {
+    const tipo = document.getElementById("novoTipoEmprestimo")?.value;
+    const inputQtd = document.getElementById("novoQtdParcelas");
+    const inputTotal = document.getElementById("novoValorTotal");
+
+    if (inputQtd) {
+        if (tipo === "diario") inputQtd.value = "24";
+        else if (tipo === "semanal") inputQtd.value = "4";
+        else if (tipo === "mensal") inputQtd.value = "1";
+    }
+
+    if (tipo !== "diario" && inputTotal) inputTotal.value = "";
+    window.calcularValoresNovoEmprestimo();
+};
+
+window.calcularValoresNovoEmprestimo = function() {
+    const tipo = document.getElementById("novoTipoEmprestimo")?.value || "diario";
+    const valorEmprestado = Number(document.getElementById("novoValor")?.value || 0);
+    const qtdInput = document.getElementById("novoQtdParcelas");
+    const totalInput = document.getElementById("novoValorTotal");
+    const parcelaInput = document.getElementById("novoValorParcela");
+
+    if (!totalInput || !parcelaInput) return;
+
+    if (tipo === "diario") {
+        if (valorEmprestado > 0) {
+            let valorParcelaCalculado = TABELA_PARCELAS_DIARIAS[valorEmprestado] 
+                || Math.round((valorEmprestado * 1.36) / 24);
+            
+            totalInput.value = valorParcelaCalculado * 24;
+            parcelaInput.value = valorParcelaCalculado;
+        } else {
+            totalInput.value = "";
+            parcelaInput.value = "";
         }
+    } else {
+        const valorTotal = Number(totalInput.value || 0);
+        const qtdParcelas = Number(qtdInput?.value || 1);
 
-        meuGrafico = new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                labels: ['Recebido', 'Em Aberto'],
-                datasets: [{
-                    data: [recebido, aberto],
-                    backgroundColor: ['#27ae60', '#f39c12'],
-                    borderColor: '#181818',
-                    borderWidth: 2
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            color: '#ffffff',
-                            font: { size: 12 }
-                        }
-                    }
-                }
-            }
-        });
+        if (valorTotal > 0 && qtdParcelas > 0) {
+            parcelaInput.value = (valorTotal / qtdParcelas).toFixed(2);
+        } else {
+            parcelaInput.value = "";
+        }
+    }
+};
+
+async function salvarNovoEmprestimo(id) {
+    let clienteAntigo = clientes.find(c => c.id === id);
+    if (!clienteAntigo) return;
+
+    let valor = Number(document.getElementById("novoValor")?.value || 0);
+    let valorTotal = Number(document.getElementById("novoValorTotal")?.value || 0);
+    let valorParcela = Number(document.getElementById("novoValorParcela")?.value || 0);
+    let tipoEmprestimo = document.getElementById("novoTipoEmprestimo")?.value || "diario";
+    let totalParcelas = Number(document.getElementById("novoQtdParcelas")?.value || 24);
+    let data = document.getElementById("novoData")?.value || "";
+
+    if (valorTotal === 0 || valorParcela === 0 || data === "") {
+        alert("Preencha todos os campos do novo empréstimo!");
+        return;
+    }
+
+    try {
+        mostrarLoading("Criando novo empréstimo...");
+
+        await comTimeout(addDoc(collection(db, "clientes"), {
+            nome: clienteAntigo.nome || "",
+            cpf: clienteAntigo.cpf || "",
+            telefone: clienteAntigo.telefone || "",
+            chavePix: clienteAntigo.chavePix || "",
+            endereco: clienteAntigo.endereco || "",
+            linkLocalizacao: clienteAntigo.linkLocalizacao || "",
+            placaVeiculo: clienteAntigo.placaVeiculo || "",
+            referencias: clienteAntigo.referencias || [],
+            foto: clienteAntigo.foto || "",
+            docFoto: clienteAntigo.docFoto || "",
+            resFoto: clienteAntigo.resFoto || "",
+            printFoto: clienteAntigo.printFoto || "",
+            valor, valorTotal, valorParcela, parcela: valorParcela,
+            tipoEmprestimo, totalParcelas, pagas: 0, data,
+            multasPorParcela: {}
+        }), 2000);
+
+        await notificarAlteracaoGlobal();
+
+        alert("Novo empréstimo criado com sucesso!");
+        await mostrarClientes();
+        abrirTela('clientes');
+
+    } catch (e) {
+        console.log("Criado emprestimo offline.");
+        alert("Novo empréstimo salvo no dispositivo (offline).");
+        await mostrarClientes();
+        abrirTela('clientes');
+    } finally {
+        esconderLoading();
     }
 }
 
-// EXPOSIÇÃO GLOBAL DE FUNÇÕES (Módulo ES6)
+// EXPOSIÇÃO GLOBAL DE FUNÇÕES
 window.salvarCliente = salvarCliente;
 window.baixarParcelasSelecionadas = baixarParcelasSelecionadas;
 window.aplicarJurosSelecionadas = aplicarJurosSelecionadas;
@@ -1104,6 +1336,8 @@ window.recusarSolicitacao = recusarSolicitacao;
 window.abrirModalEditar = abrirModalEditar;
 window.salvarEdicaoCliente = salvarEdicaoCliente;
 window.abrirTela = abrirTela;
+window.abrirModalNovoEmprestimo = abrirModalNovoEmprestimo;
+window.salvarNovoEmprestimo = salvarNovoEmprestimo;
 
 // INICIALIZAÇÃO DA BUSCA
 mostrarClientes();
